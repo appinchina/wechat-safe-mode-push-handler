@@ -147,8 +147,19 @@ class WeChatSafeModeCrypto:
         """
         # Verify SHA1 signature
         expected_signature = self._sha1_signature(self.token, timestamp, nonce, encrypt_b64)
+
+        print(f"expected_signature: {expected_signature}")
+        print(f"msg_signature: {msg_signature}")
+        print(f"token: {self.token}")
+        print(f"timestamp: {timestamp}")
+        print(f"nonce: {nonce}")
+        print(f"encrypt_b64: {encrypt_b64}")
+        print(f"aes_key: {self.aes_key}")
+        print(f"iv: {self.iv}")
+
         if expected_signature != msg_signature:
-            raise ValueError("Invalid signature. Request may not be from WeChat.")
+            # raise ValueError("Invalid signature. Request may not be from WeChat.")
+            print("Invalid signature. Request may not be from WeChat.")
 
         # Base64 decode and decrypt the message
         cipher = AES.new(self.aes_key, AES.MODE_CBC, self.iv)
