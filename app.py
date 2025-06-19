@@ -140,7 +140,7 @@ async def receive_message(
 
             decrypted_data_json = json.loads(decrypted_data_plaintext)
             
-            logger.info(f"Decrypted JSON: {json.dumps(decrypted_data_json, ensure_ascii=False)}")
+            # logger.info(f"Decrypted JSON: {json.dumps(decrypted_data_json, ensure_ascii=False)}")
             
             # Process the decrypted message
             msg_type = decrypted_data_json.get("MsgType")
