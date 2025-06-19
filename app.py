@@ -1,15 +1,69 @@
+"""
+WeChat Push Notification Receiver - Security Mode Handler
+
+Purpose:
+    This FastAPI application serves as a webhook endpoint for receiving and processing
+    push notifications from WeChat Official Accounts. It supports both encrypted
+    (security mode) and non-encrypted message formats, with comprehensive signature
+    verification and message decryption capabilities.
+
+Key Features:
+    - WeChat server verification endpoint (GET /wechat)
+    - Push notification receiver (POST /wechat)
+    - Support for encrypted messages using AES encryption (security mode)
+    - Support for non-encrypted messages (plain text mode)
+    - Automatic signature verification for message authenticity
+    - JSON-based message processing and response formatting
+    - Comprehensive logging for debugging and monitoring
+
+Configuration:
+    The application requires the following environment variables (set in .env file):
+    - WECHAT_TOKEN: The token configured in WeChat Official Account settings
+    - WECHAT_ENCODING_AES_KEY: The encoding AES key for encrypted messages
+    - WECHAT_APPID: The WeChat Official Account AppID
+
+Message Flow:
+    1. WeChat server sends verification request (GET) or push notification (POST)
+    2. Application verifies signature to ensure message authenticity
+    3. For encrypted messages: decrypts the message using AES encryption
+    4. Parses the message content and determines message type
+    5. Processes the message based on type (text, event, etc.)
+    6. Returns appropriate response (encrypted or plain JSON)
+
+Security Features:
+    - SHA1 signature verification for all incoming requests
+    - AES encryption/decryption for sensitive message content
+    - Comprehensive error handling and logging
+    - Input validation and sanitization
+
+Message Types Supported:
+    - text: Text messages from users
+    - event: System events (subscribe, unsubscribe, etc.)
+    - Other message types are logged and acknowledged
+
+Usage:
+    Run the application with: python app.py
+    The server will start on http://127.0.0.1:8020
+    Configure the webhook URL in WeChat Official Account settings to point to this endpoint
+
+Dependencies:
+    - FastAPI: Web framework for API endpoints
+    - crypto_utils: Custom module for WeChat encryption/decryption
+    - python-dotenv: Environment variable management
+    - uvicorn: ASGI server for running the application
+"""
+
 from fastapi import FastAPI, Request, HTTPException, Response
 import hashlib
 import logging
 import json
 import time
 from typing import List, Dict, Any
-import sys
-import xml.etree.cElementTree as ET
+from crypto_utils import WeChatSafeModeCrypto
+from dotenv import load_dotenv
+import os
 
-# Add the Python directory to the path to import WXBizMsgCrypt
-from WXBizMsgCrypt import WXBizMsgCrypt
-import ierror
+load_dotenv()
 
 # Configure basic logging
 logging.basicConfig(
@@ -20,22 +74,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="WeChat Push Notification Receiver")
 
-# Configuration - replace with your actual values
-WECHAT_TOKEN = "AR3JDYTDKR63HH43UFODH"
-WECHAT_ENCODING_AES_KEY = "wfUTFVqieA4aOs3MedlGyP7f19OEpSMmhyetgdy25Gt"  # 43 characters
-WECHAT_APPID = "wx9cbe6d5b1f6e4e8a"
+# Configuration - now loaded from .env
+WECHAT_TOKEN = os.getenv("WECHAT_TOKEN")
+WECHAT_ENCODING_AES_KEY = os.getenv("WECHAT_ENCODING_AES_KEY")
+WECHAT_APPID = os.getenv("WECHAT_APPID")
 
-# Initialize the WeChat message crypt instance
-wxcpt = WXBizMsgCrypt(WECHAT_TOKEN, WECHAT_ENCODING_AES_KEY, WECHAT_APPID)
-
-def verify_msg_signature(token: str, timestamp: str, nonce: str, encrypt: str, msg_signature: str) -> bool:
-    """Verify the msg_signature for encrypted messages."""
-    params: List[str] = [token, timestamp, nonce, encrypt]
-    params.sort()
-    param_str = ''.join(params)
-    hash_obj = hashlib.sha1(param_str.encode('utf-8'))
-    calculated_signature = hash_obj.hexdigest()
-    return calculated_signature == msg_signature
+crypto = WeChatSafeModeCrypto(WECHAT_TOKEN, WECHAT_ENCODING_AES_KEY, WECHAT_APPID)
 
 def verify_signature(token: str, timestamp: str, nonce: str, signature: str) -> bool:
     """Verify the signature from WeChat server (for non-encrypted messages)."""
@@ -45,54 +89,6 @@ def verify_signature(token: str, timestamp: str, nonce: str, signature: str) -> 
     hash_obj = hashlib.sha1(param_str.encode('utf-8'))
     calculated_signature = hash_obj.hexdigest()
     return calculated_signature == signature
-
-def decrypt_message(encrypted_msg: str, msg_signature: str, timestamp: str, nonce: str) -> str:
-    """Decrypt the encrypted message from WeChat using the official implementation."""
-    try:
-        # The WXBizMsgCrypt.DecryptMsg method expects XML format with Encrypt tag
-        # We need to wrap the encrypted message in XML format
-        xml_data = f'<xml><Encrypt><![CDATA[{encrypted_msg}]]></Encrypt></xml>'
-        
-        # Use the official decrypt method with proper signature parameters
-        ret, decrypted_xml = wxcpt.DecryptMsg(xml_data, msg_signature, timestamp, nonce)
-        
-        if ret != ierror.WXBizMsgCrypt_OK:
-            logger.error(f"Decryption failed with error code: {ret}")
-            raise ValueError(f"Decryption failed with error code: {ret}")
-        
-        return decrypted_xml
-        
-    except Exception as e:
-        logger.error(f"Failed to decrypt message: {str(e)}")
-        raise
-
-def encrypt_message(msg: str, timestamp: str, nonce: str) -> Dict[str, Any]:
-    """Encrypt a message for response to WeChat using the official implementation."""
-    try:
-        # Use the official encrypt method
-        ret, encrypted_xml = wxcpt.EncryptMsg(msg, nonce, timestamp)
-        
-        if ret != ierror.WXBizMsgCrypt_OK:
-            logger.error(f"Encryption failed with error code: {ret}")
-            raise ValueError(f"Encryption failed with error code: {ret}")
-        
-        # Parse the XML response to extract the components
-        xml_tree = ET.fromstring(encrypted_xml)
-        encrypt_elem = xml_tree.find("Encrypt")
-        msg_signature_elem = xml_tree.find("MsgSignature")
-        timestamp_elem = xml_tree.find("TimeStamp")
-        nonce_elem = xml_tree.find("Nonce")
-        
-        return {
-            "Encrypt": encrypt_elem.text if encrypt_elem is not None else "",
-            "MsgSignature": msg_signature_elem.text if msg_signature_elem is not None else "",
-            "TimeStamp": timestamp_elem.text if timestamp_elem is not None else timestamp,
-            "Nonce": nonce_elem.text if nonce_elem is not None else nonce
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to encrypt message: {str(e)}")
-        raise
 
 @app.get("/wechat")
 async def verify_wechat(
@@ -113,17 +109,19 @@ async def verify_wechat(
         raise HTTPException(status_code=403, detail="Invalid signature")
 
 @app.post("/wechat")
-async def receive_message(request: Request):
-    """Handle WeChat push notifications with security mode."""
+async def receive_message(
+    signature: str,
+    timestamp: str,
+    nonce: str,
+    msg_signature: str,
+    encrypt_type: str,
+    request: Request
+):
+    """Handle WeChat push notifications with security mode - JSON format."""
     logger.info(f"POST /wechat - Client: {request.client.host if request.client else 'unknown'}")
-    
-    # Get query parameters
-    params = dict(request.query_params)
-    signature = params.get("signature")
-    timestamp = params.get("timestamp")
-    nonce = params.get("nonce")
-    msg_signature = params.get("msg_signature")
-    encrypt_type = params.get("encrypt_type")
+
+    # Also log the query parameters
+    logger.info(f"Query parameters: {request.query_params}")
     
     try:
         # Get message body
@@ -133,74 +131,74 @@ async def receive_message(request: Request):
         # Check if this is an encrypted message
         if encrypt_type == "aes" and msg_signature:
             # Verify msg_signature for encrypted messages
+            to_user_name = body.get("ToUserName")
             encrypt = body.get("Encrypt")
             if not encrypt:
                 raise HTTPException(status_code=400, detail="Missing Encrypt field")
             
-            if not verify_msg_signature(WECHAT_TOKEN, timestamp, nonce, encrypt, msg_signature):
-                logger.error("Msg signature verification failed")
-                raise HTTPException(status_code=403, detail="Invalid msg_signature")
+            decrypted_data_plaintext = crypto.decrypt(encrypt, msg_signature, timestamp, nonce)
+
+            decrypted_data_json = json.loads(decrypted_data_plaintext)
             
-            # Decrypt the message using official implementation
-            decrypted_xml = decrypt_message(encrypt, msg_signature, timestamp, nonce)
-            logger.info(f"Decrypted XML: {decrypted_xml}")
-            
-            # Parse the decrypted XML
-            try:
-                xml_tree = ET.fromstring(decrypted_xml)
-                decrypted_body = {}
-                for child in xml_tree:
-                    decrypted_body[child.tag] = child.text
-                
-                logger.info(f"Decrypted message: {json.dumps(decrypted_body, ensure_ascii=False)}")
-            except ET.ParseError as e:
-                logger.error(f"Failed to parse decrypted XML: {str(e)}")
-                raise HTTPException(status_code=400, detail="Invalid decrypted XML")
+            logger.info(f"Decrypted JSON: {json.dumps(decrypted_data_json, ensure_ascii=False)}")
             
             # Process the decrypted message
-            msg_type = decrypted_body.get("MsgType")
-            from_user = decrypted_body.get("FromUserName", "unknown")
-            
+            msg_type = decrypted_data_json.get("MsgType")
+            from_user = decrypted_data_json.get("FromUserName", "unknown")
         else:
             # Handle non-encrypted messages (legacy mode)
             if not verify_signature(WECHAT_TOKEN, timestamp, nonce, signature):
                 logger.error("Signature verification failed")
                 raise HTTPException(status_code=403, detail="Invalid signature")
             
-            decrypted_body = body
+            decrypted_data_json = body
             msg_type = body.get("MsgType")
             from_user = body.get("FromUserName", "unknown")
         
         logger.info(f"Message type: {msg_type}, From: {from_user}")
         
         # Process the message based on its type
-        response_msg = ""
+        response_data = {}
         
         if msg_type == "event":
-            event = decrypted_body.get("Event")
+            event = decrypted_data_json.get("Event")
             logger.info(f"Received event: {event}")
             # Handle events here
-            response_msg = '{"demo_resp":"event received"}'
+            response_data = {
+                "status": "success",
+                "message": "event received",
+                "event_type": event,
+                "timestamp": int(time.time())
+            }
         
         elif msg_type == "text":
-            content = decrypted_body.get("Content", "")
+            content = decrypted_data_json.get("Content", "")
             logger.info(f"Received text: {content}")
             # Handle text messages here
-            response_msg = '{"demo_resp":"text received"}'
+            response_data = {
+                "status": "success",
+                "message": "text received",
+                "content": content,
+                "timestamp": int(time.time())
+            }
         
         else:
             logger.info(f"Received message of type: {msg_type}")
             # Handle other message types here
-            response_msg = '{"demo_resp":"message received"}'
+            response_data = {
+                "status": "success",
+                "message": "message received",
+                "msg_type": msg_type,
+                "timestamp": int(time.time())
+            }
         
         # If this was an encrypted message, return encrypted response
         if encrypt_type == "aes" and msg_signature:
-            encrypted_response = encrypt_message(response_msg, timestamp, nonce)
-            logger.info(f"Sending encrypted response: {json.dumps(encrypted_response, ensure_ascii=False)}")
-            return encrypted_response
+            encription_result = crypto.encrypt(json.dumps(response_data))
+            return encription_result
         else:
-            # Return plain response for non-encrypted messages
-            return {"status": "success", "message": response_msg}
+            # Return plain JSON response for non-encrypted messages
+            return response_data
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON: {str(e)}")
